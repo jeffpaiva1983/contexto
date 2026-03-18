@@ -16,25 +16,55 @@ const WORDS = [
 
 function getDailyWord() {
   const d = new Date();
-  const seed = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+  const seed = d.getFullYear() * 10000 + (d.getMonth()+1) * 100 + d.getDate();
   return WORDS[seed % WORDS.length];
 }
-
 function getRandomWord(exclude) {
   const pool = WORDS.filter(w => w !== exclude);
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
 // ─── State ───────────────────────────────────────────────────────────────────
+let model = null;
+let modelLoading = false;
+
 let state = {
-  screen: "home",   // home | game
-  mode: null,       // daily | free
-  secret: "",
-  guesses: [],      // [{word, rank}]
-  loading: false,
-  won: false,
-  revealed: false,
+  screen: "home", mode: null, secret: "",
+  guesses: [], loading: false, modelReady: false,
+  won: false, revealed: false,
 };
+
+// ─── TF.js Multilingual USE ──────────────────────────────────────────────────
+async function loadModel() {
+  if (model) return model;
+  if (modelLoading) {
+    while (modelLoading) await new Promise(r => setTimeout(r, 200));
+    return model;
+  }
+  modelLoading = true;
+  model = await use.load();
+  state.modelReady = true;
+  modelLoading = false;
+  return model;
+}
+
+function cosineSim(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]*b[i]; na += a[i]*a[i]; nb += b[i]*b[i];
+  }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+async function fetchRank(guess, secret) {
+  const m = await loadModel();
+  const emb = await m.embed([guess, secret]);
+  const vecs = await emb.array();
+  emb.dispose();
+  if (guess.toLowerCase() === secret.toLowerCase()) return 1;
+  const sim = cosineSim(vecs[0], vecs[1]);
+  return Math.max(2, Math.min(10000, Math.round(1 + (1 - sim) / 2 * 9999)));
+}
 
 // ─── Rank helpers ─────────────────────────────────────────────────────────────
 function rankColor(rank) {
@@ -44,139 +74,92 @@ function rankColor(rank) {
   if (rank <= 500)  return { bg: "#ffb300", label: "Frio ❄️" };
   return              { bg: "#ef5350", label: "Gelado 🧊" };
 }
-
 function rankPct(rank) {
   return Math.max(2, Math.min(100, 100 - (rank / 10000) * 100));
 }
 
-// ─── API ──────────────────────────────────────────────────────────────────────
-async function fetchRank(guess, secret) {
-  const prompt = `Você é um motor de similaridade semântica para um jogo de palavras em português chamado "Contexto".
-
-A palavra secreta é: "${secret}"
-A palavra chutada pelo jogador é: "${guess}"
-
-Calcule um ranking de similaridade semântica de 1 a 10000, onde:
-- 1 = a própria palavra secreta
-- 2-10 = sinônimos diretos ou palavras extremamente relacionadas
-- 11-100 = palavras muito próximas (mesmo campo semântico)
-- 101-500 = palavras relacionadas indiretamente
-- 501-2000 = conexão temática fraca
-- 2001-10000 = sem relação semântica
-
-Responda APENAS com JSON no formato exato (sem markdown):
-{"rank": NUMBER}`;
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 60,
-      messages: [{ role: "user", content: prompt }]
-    })
-  });
-  const data = await res.json();
-  const text = (data.content || []).map(i => i.text || "").join("").replace(/```json|```/g, "").trim();
-  return JSON.parse(text).rank;
-}
-
 // ─── Render ───────────────────────────────────────────────────────────────────
 function render() {
-  const app = document.getElementById("app");
-  if (state.screen === "home") {
-    app.innerHTML = renderHome();
-  } else {
-    app.innerHTML = renderGame();
-  }
+  document.getElementById("app").innerHTML =
+    state.screen === "home" ? renderHome() : renderGame();
   bindEvents();
 }
 
 function renderHome() {
   return `
-    <div class="home">
-      <div class="home-inner">
-        <div class="home-badge">🇧🇷 &nbsp;Português Brasileiro</div>
-        <h1 class="logo">CONTEXTO</h1>
-        <p class="tagline">Descubra a palavra secreta<br>pela proximidade semântica</p>
-        <div class="mode-grid">
-          <button class="mode-btn" data-action="start-daily">
-            <span class="mode-icon">📅</span>
-            <strong>Palavra do Dia</strong>
-            <small>Mesma palavra para todos</small>
-          </button>
-          <button class="mode-btn" data-action="start-free">
-            <span class="mode-icon">🎲</span>
-            <strong>Modo Livre</strong>
-            <small>Jogue quantas vezes quiser</small>
-          </button>
-        </div>
-        <div class="howto">
-          <p><strong>Como jogar:</strong> Digite qualquer palavra em português. O jogo mostra o quão próxima ela é da palavra secreta — quanto menor o número, mais quente você está! 🔥</p>
-          <div class="legend">
-            <span class="leg" style="color:#00e676">#1 — Acertou!</span>
-            <span class="leg" style="color:#69f0ae">#2–10 — Quente 🔥</span>
-            <span class="leg" style="color:#c6f135">#11–100 — Morno ♨️</span>
-            <span class="leg" style="color:#ffb300">#101–500 — Frio ❄️</span>
-            <span class="leg" style="color:#ef5350">#500+ — Gelado 🧊</span>
-          </div>
+    <div class="home"><div class="home-inner">
+      <div class="home-badge">🇧🇷 Português Brasileiro</div>
+      <h1 class="logo">CONTEXTO</h1>
+      <p class="tagline">Descubra a palavra secreta<br>pela proximidade semântica</p>
+      <div class="mode-grid">
+        <button class="mode-btn" data-action="start-daily">
+          <span class="mode-icon">📅</span><strong>Palavra do Dia</strong><small>Mesma palavra para todos</small>
+        </button>
+        <button class="mode-btn" data-action="start-free">
+          <span class="mode-icon">🎲</span><strong>Modo Livre</strong><small>Jogue quantas vezes quiser</small>
+        </button>
+      </div>
+      <div class="howto">
+        <p><strong>Como jogar:</strong> Digite qualquer palavra. O jogo mostra o quão próxima ela é da palavra secreta — quanto menor o número, mais quente você está! 🔥</p>
+        <div class="legend">
+          <span class="leg" style="color:#00e676">#1 — Acertou!</span>
+          <span class="leg" style="color:#69f0ae">#2–10 — Quente 🔥</span>
+          <span class="leg" style="color:#c6f135">#11–100 — Morno ♨️</span>
+          <span class="leg" style="color:#ffb300">#101–500 — Frio ❄️</span>
+          <span class="leg" style="color:#ef5350">#500+ — Gelado 🧊</span>
         </div>
       </div>
-    </div>`;
+      <p class="tech-note">⚡ 100% local · sem servidor · sem login</p>
+    </div></div>`;
 }
 
 function renderGame() {
-  const best = state.guesses.length > 0 ? state.guesses[0] : null;
-
-  const guessRows = state.guesses.map((g, i) => {
+  const best = state.guesses[0] || null;
+  const dateStr = new Date().toLocaleDateString("pt-BR", { day:"2-digit", month:"long" });
+  const rows = state.guesses.map((g, i) => {
     const { bg, label } = rankColor(g.rank);
-    const isWin = g.rank === 1;
-    return `
-      <div class="guess-row ${isWin ? "guess-win" : ""}" style="--rank-color:${bg}">
-        <span class="guess-num">${i + 1}</span>
-        <span class="guess-word">${g.word}</span>
-        <span class="guess-rank" style="color:${bg}">#${g.rank}</span>
-        <span class="guess-label" style="color:${bg};border-color:${bg}40;background:${bg}15">${label}</span>
-      </div>`;
+    return `<div class="guess-row ${g.rank===1?"guess-win":""}" style="--rank-color:${bg}">
+      <span class="guess-num">${i+1}</span>
+      <span class="guess-word">${g.word}</span>
+      <span class="guess-rank" style="color:${bg}">#${g.rank}</span>
+      <span class="guess-label" style="color:${bg};border-color:${bg}40;background:${bg}15">${label}</span>
+    </div>`;
   }).join("");
-
-  const today = new Date();
-  const dateStr = today.toLocaleDateString("pt-BR", { day: "2-digit", month: "long" });
 
   return `
     <div class="game">
-
-      <!-- Header -->
       <header class="hdr">
         <button class="back-btn" data-action="go-home">← Início</button>
         <h1 class="hdr-logo">CONTEXTO</h1>
-        <span class="hdr-badge">${state.mode === "daily" ? `📅 ${dateStr}` : "🎲 Livre"}</span>
+        <span class="hdr-badge">${state.mode==="daily" ? `📅 ${dateStr}` : "🎲 Livre"}</span>
       </header>
 
-      <!-- Win banner -->
+      ${!state.modelReady ? `
+        <div class="model-loading">
+          <div class="model-spinner"></div>
+          <div><strong>Carregando modelo de IA...</strong><small>Apenas no primeiro acesso (~5MB)</small></div>
+        </div>` : ""}
+
       ${state.won ? `
         <div class="win-banner">
           <div class="win-top">🏆 A palavra era <strong>"${state.secret}"</strong></div>
-          <div class="win-sub">Descoberta em ${state.guesses.length} tentativa${state.guesses.length > 1 ? "s" : ""}!</div>
-          ${state.mode === "free" ? `<button class="play-again-btn" data-action="new-game">Nova palavra →</button>` : ""}
+          <div class="win-sub">Descoberta em ${state.guesses.length} tentativa${state.guesses.length>1?"s":""}!</div>
+          ${state.mode==="free" ? `<button class="play-again-btn" data-action="new-game">Nova palavra →</button>` : ""}
         </div>` : ""}
 
-      <!-- Reveal banner -->
       ${state.revealed && !state.won ? `
         <div class="reveal-banner">
           A palavra era <strong style="color:#69f0ae">"${state.secret}"</strong>
-          ${state.mode === "free" ? `<button class="play-again-btn" data-action="new-game">Nova palavra →</button>` : ""}
+          ${state.mode==="free" ? `<button class="play-again-btn" data-action="new-game">Nova palavra →</button>` : ""}
         </div>` : ""}
 
-      <!-- Input -->
       ${!state.won && !state.revealed ? `
         <div class="input-wrap">
           <input id="guess-input" class="guess-input" type="text"
-            placeholder="Digite uma palavra..."
+            placeholder="${state.modelReady ? "Digite uma palavra..." : "Aguarde o modelo carregar..."}"
             autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
-            ${state.loading ? "disabled" : ""}
-          />
-          <button class="send-btn" data-action="submit" ${state.loading ? "disabled" : ""}>
+            ${state.loading || !state.modelReady ? "disabled" : ""}/>
+          <button class="send-btn" data-action="submit" ${state.loading || !state.modelReady ? "disabled" : ""}>
             ${state.loading
               ? `<span class="spinner"></span>`
               : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`}
@@ -184,115 +167,89 @@ function renderGame() {
         </div>
         <div id="err-msg" class="err-msg"></div>` : ""}
 
-      <!-- Stats -->
       ${state.guesses.length > 0 ? `
         <div class="stats-bar">
-          <span class="stat">🔢 ${state.guesses.length} tentativa${state.guesses.length > 1 ? "s" : ""}</span>
+          <span class="stat">🔢 ${state.guesses.length} tentativa${state.guesses.length>1?"s":""}</span>
           ${best ? `<span class="stat">🏅 Melhor: <strong style="color:${rankColor(best.rank).bg}">#${best.rank}</strong></span>` : ""}
           ${!state.won && !state.revealed ? `<button class="give-up-btn" data-action="reveal">😵 Desistir</button>` : ""}
         </div>
-
         ${best && !state.won ? `
           <div class="bar-wrap">
             <div class="bar-label">Proximidade da melhor tentativa</div>
-            <div class="bar-track">
-              <div class="bar-fill" style="width:${rankPct(best.rank)}%;background:${rankColor(best.rank).bg}"></div>
-            </div>
-          </div>` : ""}
-      ` : ""}
+            <div class="bar-track"><div class="bar-fill" style="width:${rankPct(best.rank)}%;background:${rankColor(best.rank).bg}"></div></div>
+          </div>` : ""}` : ""}
 
-      <!-- Guesses -->
       <div class="guesses-list">
-        ${guessRows}
-        ${state.guesses.length === 0 ? `
+        ${rows}
+        ${state.guesses.length===0 && state.modelReady ? `
           <div class="empty-state">
             <div class="empty-icon">🔍</div>
             <p>Nenhuma tentativa ainda.<br>Digite uma palavra para começar!</p>
           </div>` : ""}
       </div>
-
     </div>`;
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────────
 function bindEvents() {
-  document.querySelectorAll("[data-action]").forEach(el => {
-    el.addEventListener("click", handleAction);
-  });
-
+  document.querySelectorAll("[data-action]").forEach(el =>
+    el.addEventListener("click", handleAction));
   const inp = document.getElementById("guess-input");
   if (inp) {
-    inp.addEventListener("keydown", e => { if (e.key === "Enter") doSubmit(); });
-    inp.focus();
+    inp.addEventListener("keydown", e => { if (e.key==="Enter") doSubmit(); });
+    if (state.modelReady) inp.focus();
   }
 }
 
 function handleAction(e) {
-  const action = e.currentTarget.dataset.action;
-  if (action === "start-daily") startGame("daily");
-  else if (action === "start-free") startGame("free");
-  else if (action === "go-home") { state.screen = "home"; render(); }
-  else if (action === "submit") doSubmit();
-  else if (action === "reveal") { state.revealed = true; render(); }
-  else if (action === "new-game") {
-    state.secret = getRandomWord(state.secret);
-    state.guesses = [];
-    state.won = false;
-    state.revealed = false;
-    render();
+  const a = e.currentTarget.dataset.action;
+  if (a==="start-daily") startGame("daily");
+  else if (a==="start-free") startGame("free");
+  else if (a==="go-home") { state.screen="home"; render(); }
+  else if (a==="submit") doSubmit();
+  else if (a==="reveal") { state.revealed=true; render(); }
+  else if (a==="new-game") {
+    state.secret=getRandomWord(state.secret);
+    state.guesses=[]; state.won=false; state.revealed=false; render();
   }
 }
 
-function startGame(mode) {
+async function startGame(mode) {
   state.mode = mode;
-  state.secret = mode === "daily" ? getDailyWord() : getRandomWord("");
-  state.guesses = [];
-  state.won = false;
-  state.revealed = false;
-  state.screen = "game";
+  state.secret = mode==="daily" ? getDailyWord() : getRandomWord("");
+  state.guesses=[]; state.won=false; state.revealed=false;
+  state.screen="game";
   render();
+  if (!model) {
+    try { await loadModel(); render(); }
+    catch { showErr("Erro ao carregar o modelo. Verifique sua conexão."); }
+  }
 }
 
 async function doSubmit() {
   const inp = document.getElementById("guess-input");
-  if (!inp || state.loading || state.won) return;
-
-  const word = inp.value.trim().toLowerCase().normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "").normalize("NFC"); // normalize accents for comparison
-  const wordRaw = inp.value.trim().toLowerCase();
-
-  if (!wordRaw) return;
-  if (state.guesses.find(g => g.word === wordRaw)) {
-    showErr("Você já tentou essa palavra!");
-    return;
-  }
-
-  state.loading = true;
-  render();
-
+  if (!inp || state.loading || state.won || !state.modelReady) return;
+  const word = inp.value.trim().toLowerCase();
+  if (!word) return;
+  if (state.guesses.find(g => g.word===word)) { showErr("Você já tentou essa palavra!"); return; }
+  state.loading=true; render();
   try {
-    const rank = await fetchRank(wordRaw, state.secret);
-    const entry = { word: wordRaw, rank };
-    state.guesses = [...state.guesses, entry].sort((a, b) => a.rank - b.rank);
-    if (rank === 1) state.won = true;
-  } catch {
-    showErr("Erro ao consultar a API. Verifique sua conexão.");
-  } finally {
-    state.loading = false;
-    render();
-    const newInp = document.getElementById("guess-input");
-    if (newInp) newInp.focus();
+    const rank = await fetchRank(word, state.secret);
+    state.guesses = [...state.guesses, {word, rank}].sort((a,b) => a.rank-b.rank);
+    if (rank===1) state.won=true;
+  } catch { showErr("Erro ao calcular similaridade."); }
+  finally {
+    state.loading=false; render();
+    const ni=document.getElementById("guess-input");
+    if (ni) ni.focus();
   }
 }
 
 function showErr(msg) {
-  const el = document.getElementById("err-msg");
-  if (el) { el.textContent = msg; setTimeout(() => { if (el) el.textContent = ""; }, 3000); }
+  const el=document.getElementById("err-msg");
+  if (el) { el.textContent=msg; setTimeout(()=>{ if(el) el.textContent=""; },3000); }
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("sw.js").catch(() => {});
-}
-
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
 render();

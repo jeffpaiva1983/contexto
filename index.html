@@ -523,6 +523,24 @@
       flex-shrink: 0;
       padding: 4px;
     }
+
+    /* ─── Model Loading ──────────────────────────────────────────────────────── */
+    .model-loading {
+      display: flex; align-items: center; gap: 14px;
+      margin: 14px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 14px;
+      padding: 16px 18px; animation: pulse 1.5s ease infinite;
+    }
+    .model-loading strong { display: block; font-size: 14px; color: var(--text); margin-bottom: 3px; }
+    .model-loading small  { font-size: 12px; color: var(--muted); font-style: italic; }
+    .model-spinner {
+      width: 36px; height: 36px; flex-shrink: 0;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    .tech-note { font-size: 12px; color: #333350; text-align: center; letter-spacing: 1px; }
   </style>
 </head>
 <body>
@@ -535,6 +553,9 @@
     <button class="dismiss-btn" id="dismiss-btn">✕</button>
   </div>
 
+  <!-- TensorFlow.js + Multilingual Universal Sentence Encoder -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/universal-sentence-encoder@1.3.3/dist/universal-sentence-encoder.min.js"></script>
   <script src="app.js"></script>
   <script>
     // ── PWA Install prompt ──────────────────────────────────────────────────
